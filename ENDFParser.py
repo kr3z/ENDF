@@ -1,12 +1,11 @@
 import re
 import math
 from enum import Enum
-import mysql.connector
-import configparser
 import traceback
 import io
 import time
 import numpy
+from DB import DBConnection
 
 BATCH_SIZE = 1000
 
@@ -155,27 +154,7 @@ class ENDFRecord:
         L2_str = self.content[33:44]
         N1_str = self.content[44:55]
         N2_str = self.content[55:66]
-#        if C1_str.strip()=='':
-#            C1 = 0.0
-#        else:
-#            try:
-#                C1 = float(C1_str)
-#            except AttributeError:
-#                C1 = ENDFRecord.parseFloat(C1_str)
-#        if C2_str.strip()=='':
-#            C2 = 0.0
-#        else:
-#            try:
-#                C2 = float(C2_str)
-#            except AttributeError:
-#                C2 = ENDFRecord.parseFloat(C2_str)
-        # For DIR records C1 & C2 will be empty
-        #C1 = C2 = None
-        #try:
-        #    C1 = ENDFRecord.parseFloat()
-        #    C2 = ENDFRecord.parseFloat()
-        #except AttributeError:
-        #    pass
+
         C1 = 0.0 if C1_str.strip()=='' else ENDFRecord.parseFloat(C1_str)
         C2 = 0.0 if C2_str.strip()=='' else ENDFRecord.parseFloat(C2_str)
         L1 = 0 if L1_str.strip()=='' else int(L1_str)
@@ -403,129 +382,109 @@ class ENDFSection(ENDFPersistable):
                 self.records.append(rec)
         #print("Parsed Section: MAT=%s MF=%s MT=%s" % (self.material, self.file, self.MT))
             
-    def persist(self,cursor):
+    def persist(self):
+        conn = DBConnection.getConnection()
         if not self.parsed:
             raise NotImplementedYetException("MF: %s MT: %s" % (self.file, self.MT))
         t_begin = time.perf_counter()
         if self.file == 1 and self.MT == 451:
             #Persist Library
             t_lib_begin = time.perf_counter()
-            cursor.execute("SELECT id FROM Library WHERE NLIB=%s and NSUB=%s and NVER=%s and LREL=%s and NFOR=%s",
+            res = conn.execute("SELECT id FROM Library WHERE NLIB=%s and NSUB=%s and NVER=%s and LREL=%s and NFOR=%s",
                           [self.NLIB,self.NSUB,self.NVER,self.LREL,self.NFOR])
-            res = cursor.fetchone()
-            if res is not None:
+            if res:
                 print("Library already exists for NLIB=%s, NSUB=%s, NVER=%s, LREL=%s, NFOR=%s" % (self.NLIB,self.NSUB,self.NVER,self.LREL,self.NFOR))
-                #raise Exception("Library already exists")
-                self.lib_key = res[0]
+                self.lib_key = res[0][0]
             else:
                 print("Persisting Library")
                 IPART = str(self.NSUB)[0:-1]
                 ITYPE = str(self.NSUB)[-1:]
-                cursor.execute("INSERT INTO Library(NLIB,NVER,LREL,NSUB,NFOR,IPART,ITYPE) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                               [self.NLIB, self.NVER, self.LREL, self.NSUB, self.NFOR, IPART, ITYPE])
-                cursor.execute("SELECT id FROM Library WHERE NLIB=%s and NSUB=%s and NVER=%s and LREL=%s and NFOR=%s",
-                              [self.NLIB,self.NSUB,self.NVER,self.LREL,self.NFOR])
-                self.lib_key = cursor.fetchone()[0]
+                self.lib_key = DBConnection.getNextId()
+                conn.execute("INSERT INTO Library(id,NLIB,NVER,LREL,NSUB,NFOR,IPART,ITYPE) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                               [self.lib_key, self.NLIB, self.NVER, self.LREL, self.NSUB, self.NFOR, IPART, ITYPE])
             self.timings["lib"] = time.perf_counter() - t_lib_begin
+
             #Persist Material
-#            print("Search material: MAT: %s AWR: %s LFI: %s LIS: %s LISO: %s ELIS: %s STA: %s" %
-#                               (self.material,self.AWR,self.LFI,self.LIS,self.LISO,self.ELIS,self.STA))
-#            cursor.execute("SELECT id from Material where MAT=%s and abs(AWR-%s)<.00001 and LFI=%s and LIS=%s and LISO=%s and ELIS=%s and STA=%s",
             t_mat_begin = time.perf_counter()
-            cursor.execute("SELECT id from Material where MAT=%s and AWR=%s and LFI=%s and LIS=%s and LISO=%s and abs(ELIS-%s)<.05 and STA=%s",
+            res = conn.execute("SELECT id from Material where MAT=%s and AWR=%s and LFI=%s and LIS=%s and LISO=%s and abs(ELIS-%s)<.05 and STA=%s",
                            [self.material,self.AWR,self.LFI,self.LIS, self.LISO, self.ELIS, self.STA])
-            res = cursor.fetchone()
-            if res is not None:
-                self.mat_key = res[0]
+            if res:
+                self.mat_key = res[0][0]
             else:
                 A = self.ZA % 1000
                 Z = int(self.ZA/1000)
                 print("Persisting material: MAT: %s AWR: %s LFI: %s LIS: %s LISO: %s ELIS: %s STA: %s" %
                                (self.material,self.AWR,self.LFI,self.LIS,self.LISO,self.ELIS,self.STA))
-                cursor.execute("INSERT INTO Material(MAT,Z,A,AWR,LFI,LIS,LISO,ELIS,STA) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                               [self.material,Z,A,self.AWR,self.LFI,self.LIS,self.LISO,self.ELIS,self.STA])
-#                cursor.execute("SELECT id from Material where MAT=%s and abs(AWR-%s)<.00001 and LFI=%s and LIS=%s and LISO=%s and abs(ELIS-%s)<.001 and STA=%s",
-                cursor.execute("SELECT id from Material where MAT=%s and AWR=%s and LFI=%s and LIS=%s and LISO=%s and abs(ELIS-%s)<.05 and STA=%s",
-                               [self.material,self.AWR,self.LFI,self.LIS, self.LISO, self.ELIS, self.STA])
-                self.mat_key = cursor.fetchone()[0]
+                self.mat_key = DBConnection.getNextId()
+                conn.execute("INSERT INTO Material(id,MAT,Z,A,AWR,LFI,LIS,LISO,ELIS,STA) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                               [self.mat_key, self.material,Z,A,self.AWR,self.LFI,self.LIS,self.LISO,self.ELIS,self.STA])
             self.timings["mat"] = time.perf_counter() - t_mat_begin
+
             #Persist GeneralInfo (MT451)
             t_gi_begin = time.perf_counter()
-            cursor.execute("SELECT id from GeneralInfo WHERE material_key=%s and library_key=%s",
+            res = conn.execute("SELECT id from GeneralInfo WHERE material_key=%s and library_key=%s",
                            [self.mat_key, self.lib_key])
-            res = cursor.fetchone()
-            if res is not None:
-                gi_key = res[0]
+            if res:
+                gi_key = res[0][0]
             else:
-                cursor.execute("INSERT INTO GeneralInfo(material_key,library_key,file_key,LRP,NMOD,AWI,EMAX,TEMP,LDRV,Description) VALUES (%s,%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                               [self.mat_key,self.lib_key,self.file_key,self.LRP,self.NMOD,self.AWI,self.EMAX,self.TEMP,self.LDRV,self.desc])
-                cursor.execute("SELECT id from GeneralInfo WHERE material_key=%s and library_key=%s",
-                               [self.mat_key, self.lib_key])
-                gi_key = cursor.fetchone()[0]
+                gi_key = DBConnection.getNextId()
+                conn.execute("INSERT INTO GeneralInfo(id,material_key,library_key,file_key,LRP,NMOD,AWI,EMAX,TEMP,LDRV,Description) VALUES (%s,%s,%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                               [gi_key,self.mat_key,self.lib_key,self.file_key,self.LRP,self.NMOD,self.AWI,self.EMAX,self.TEMP,self.LDRV,self.desc])
             self.timings["gi"] = time.perf_counter() - t_gi_begin
+
             #Persist file directory
             t_dir_begin = time.perf_counter()
-#            cursor.execute("SELECT count(*) FROM Directory WHERE general_info_key=%s",[gi_key])
-#            if cursor.fetchone()[0] == 0:
-            cursor.execute("SELECT 1 FROM Directory WHERE general_info_key=%s LIMIT 1",[gi_key])
-            res = cursor.fetchone()
-            if res is None:
+            res = conn.execute("SELECT 1 FROM Directory WHERE general_info_key=%s LIMIT 1",[gi_key])
+            if not res:
                 data = []
                 for i in range(0,len(self.section_data)):
-                    entry = [gi_key]
+                    dir_key = DBConnection.getNextId()
+                    entry = [dir_key,gi_key]
                     entry.extend(self.section_data[i])
                     data.append(entry)
                 for i in range(0,len(data),BATCH_SIZE):
-                    cursor.executemany("INSERT INTO Directory(general_info_key,MF,MT,NC,Modification) VALUES(%s,%s,%s,%s,%s)",
+                    conn.executemany("INSERT INTO Directory(id,general_info_key,MF,MT,NC,Modification) VALUES(%s,%s,%s,%s,%s,%s)",
                                     data[i:i+BATCH_SIZE])
             self.timings["dir"] = time.perf_counter() - t_dir_begin
+
         elif self.file == 3:
             t_csinfo_begin = time.perf_counter()
-            cursor.execute("SELECT id FROM CrossSectionInfo WHERE MT=%s and material_key=%s and library_key=%s",
+            res = conn.execute("SELECT id FROM CrossSectionInfo WHERE MT=%s and material_key=%s and library_key=%s",
                            [self.MT, self.mat_key,self.lib_key])
-            res = cursor.fetchone()
-            if res is not None:
-                cs_key = res[0]
+            if res:
+                cs_key = res[0][0]
             else:
-#                print("%s %s %s" % (self.MT, self.mat_key, self.lib_key))
-                cursor.execute("INSERT INTO CrossSectionInfo(MT,material_key,library_key,ZA,AWR,QM,QI,LR,NR,NP) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                               [self.MT,self.mat_key,self.lib_key,self.ZA,self.AWR,self.QM,self.QI,self.LR,self.NR,self.NP])
-                cursor.execute("SELECT id FROM CrossSectionInfo WHERE MT=%s and material_key=%s and library_key=%s",
-                               [self.MT, self.mat_key,self.lib_key])
-                cs_key = cursor.fetchone()[0]
+                cs_key = DBConnection.getNextId()
+                conn.execute("INSERT INTO CrossSectionInfo(id,MT,material_key,library_key,ZA,AWR,QM,QI,LR,NR,NP) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                               [cs_key,self.MT,self.mat_key,self.lib_key,self.ZA,self.AWR,self.QM,self.QI,self.LR,self.NR,self.NP])
             self.timings["csinfo"] = time.perf_counter() - t_csinfo_begin
 
             t_interp_begin = time.perf_counter()
-#            cursor.execute("SELECT count(*) FROM Interpolation WHERE info_key=%s and MT=%s and MF=%s",
-#                           [cs_key,self.MT,self.file])
-#            if cursor.fetchone()[0]==0:
-            cursor.execute("SELECT 1 FROM Interpolation WHERE info_key=%s and MT=%s and MF=%s limit 1",
+
+            res = conn.execute("SELECT 1 FROM Interpolation WHERE info_key=%s and MT=%s and MF=%s limit 1",
                            [cs_key,self.MT,self.file])
-            res = cursor.fetchone()
-            if res is None:
+            if not res:
                 data = []
                 for i in range(0,self.NR):
-                    data.append([cs_key,self.MT,self.file,self.NBT[i],self.INT[i]])
+                    i_key = DBConnection.getNextId()
+                    data.append([i_key,cs_key,self.MT,self.file,self.NBT[i],self.INT[i]])
                 for i in range(0,len(data),BATCH_SIZE):
-                    cursor.executemany("INSERT INTO Interpolation(info_key,MT,MF,NBT,InterpolationScheme) VALUES(%s,%s,%s,%s,%s)",
+                    conn.executemany("INSERT INTO Interpolation(id,info_key,MT,MF,NBT,InterpolationScheme) VALUES(%s,%s,%s,%s,%s,%s)",
                                        data[i:i+BATCH_SIZE])
             self.timings["interp"] = time.perf_counter() - t_interp_begin
 
             t_csdata_begin = time.perf_counter()
-#            cursor.execute("SELECT count(*) FROM CrossSectionData WHERE crosssectioninfo_key=%s",
-#                           [cs_key])
-#            if cursor.fetchone()[0]==0:
-            cursor.execute("SELECT 1 FROM CrossSectionData WHERE crosssectioninfo_key=%s LIMIT 1",
+            res = conn.execute("SELECT 1 FROM CrossSectionData WHERE crosssectioninfo_key=%s LIMIT 1",
                            [cs_key])
-            res = cursor.fetchone()
-            if res is None:
+            if not res:
                 data = []
                 for i in range(0,self.NP):
-                    data.append([cs_key,self.MT,self.X[i],self.Y[i]])
+                    csd_key = DBConnection.getNextId()
+                    data.append([csd_key,cs_key,self.MT,self.X[i],self.Y[i]])
                     if (self.X[i] != self.X[i]) or (self.Y[i] != self.Y[i]):
                         raise NaNException
                 for i in range(0,len(data),BATCH_SIZE):
-                    cursor.executemany("INSERT INTO CrossSectionData(crosssectioninfo_key,MT,Energy,CrossSection) VALUES(%s,%s,%s,%s)",
+                    conn.executemany("INSERT INTO CrossSectionData(id,crosssectioninfo_key,MT,Energy,CrossSection) VALUES(%s,%s,%s,%s,%s)",
                                        data[i:i+BATCH_SIZE])
             self.timings["csdata"] = time.perf_counter() - t_csdata_begin
         else:
@@ -575,14 +534,14 @@ class ENDFFile(ENDFPersistable):
 
         #Validation
 
-    def persist(self,cursor):
+    def persist(self):
         for section in self.sections.values():
             section.setFileKey(self.file_key)
             try:
                 if self.mat_key is not None and self.lib_key is not None:
                     section.setMaterialKey(self.mat_key)
                     section.setLibraryKey(self.lib_key)
-                section.persist(cursor)
+                section.persist()
                 if self.mat_key is None or self.lib_key is None:
                     self.mat_key = section.getMaterialKey()
                     self.lib_key = section.getLibraryKey()
@@ -636,38 +595,15 @@ class ENDFMaterial(ENDFPersistable):
             print("Finished parsing Material MAT: %d" % self.material)
             for timing in self.timings:
                 if self.timings.get(timing) > .001:
-                    print(f"Persisted {timing} in {self.timings.get(timing):0.4f} seconds")
-
-#        parsed = {}
-#        unparsed = {}
-#        for endffile in self.files.values():
-#            for section in endffile.getSections().values():
-#                update_dict = unparsed
-#                if section.getParsed():
-#                    update_dict = parsed
-#                MF = section.getFile()
-#                MT = section.getMT()
-#                MF_dict = update_dict.get(MF)
-#                if MF_dict == None:
-#                    MF_dict = {}
-#                if MF_dict.get(MT) is not None:
-#                      raise Exception("MT Already Exists")
-#                MF_dict[MT] = section
-#                update_dict[MF] = MF_dict
-#        for endffile in parsed.values():
-#            for section in endffile.values():
-#                print("Parsed: MF: %s MT: %s" % (section.getFile(), section.getMT()))                
-#        for endffile in unparsed.values():
-#            for section in endffile.values():
-#                print("Unparsed: MF: %s MT: %s" % (section.getFile(), section.getMT()))                
+                    print(f"Persisted {timing} in {self.timings.get(timing):0.4f} seconds")           
                 
-    def persist(self,cursor):
+    def persist(self):
         for file in self.files.values():
             file.setFileKey(self.file_key)
             if self.mat_key is not None and self.lib_key is not None:
                 file.setMaterialKey(self.mat_key)
                 file.setLibraryKey(self.lib_key)
-            file.persist(cursor)
+            file.persist()
             if self.mat_key is None or self.lib_key is None:
                 self.mat_key = file.getMaterialKey()
                 self.lib_key = file.getLibraryKey()

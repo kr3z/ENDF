@@ -1,6 +1,7 @@
+CREATE SEQUENCE `id_seq` start with 1 minvalue 1 maxvalue 9223372036854775806 increment by 100 cache 1000 nocycle ENGINE=InnoDB;
 
 CREATE TABLE `CrossSectionData` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `crosssectioninfo_key` int(11) NOT NULL,
   `MT` smallint(6) NOT NULL,
   `Energy` float NOT NULL COMMENT 'eV',
@@ -11,7 +12,7 @@ CREATE TABLE `CrossSectionData` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci;
 
 CREATE TABLE `CrossSectionInfo` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `MT` smallint(6) NOT NULL,
   `material_key` int(11) NOT NULL,
   `library_key` int(11) NOT NULL,
@@ -27,7 +28,7 @@ CREATE TABLE `CrossSectionInfo` (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_general_ci;;
 
 CREATE TABLE `GeneralInfo` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `material_key` int(11) NOT NULL,
   `library_key` int(11) NOT NULL,
   `file_key` int(11) NOT NULL,
@@ -53,7 +54,7 @@ CREATE TABLE `GeneralInfo` (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_general_ci;
 
 CREATE TABLE `Library` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `NLIB` tinyint(4) NOT NULL COMMENT 'Library',
   `NVER` smallint(6) NOT NULL COMMENT 'Version. one of the periodic updates to a library in ENDF format (e.g., NVER=7 for ENDF/B-VII). A change of version may imply a change in format, standards, and/or procedures',
   `LREL` smallint(6) NOT NULL COMMENT 'Release. library release number of an intermediate release containing minor updates and corrections of errors after a general release of a library. A release number is appended to the library/version name for each succeeding revision of the data set(e.g., ENDF/B-VI.2 for Release 2 of the ENDF/B-VI library).',
@@ -67,7 +68,7 @@ CREATE TABLE `Library` (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_general_ci;;
 
 CREATE TABLE `Material` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `MAT` smallint(6) NOT NULL,
   `Z` tinyint(4) NOT NULL COMMENT 'Charge number',
   `A` smallint(6) NOT NULL COMMENT 'Mass number',
@@ -83,7 +84,7 @@ CREATE TABLE `Material` (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_general_ci;;
 
 CREATE TABLE `Directory` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `general_info_key` int(11) NOT NULL,
   `MF` tinyint(4) NOT NULL,
   `MT` smallint(6) NOT NULL,
@@ -94,7 +95,7 @@ CREATE TABLE `Directory` (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_general_ci;;
 
 CREATE TABLE `Files` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `path` varchar(200) NOT NULL,
   `name` varchar(200) NOT NULL,
   `zip_file` varchar(200) DEFAULT NULL,
@@ -103,7 +104,7 @@ CREATE TABLE `Files` (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_general_ci;;
 
 CREATE TABLE `Interpolation` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int(11) NOT NULL,
   `info_key` int(11) NOT NULL,
   `MT` int(11) NOT NULL,
   `MF` int(11) NOT NULL,
