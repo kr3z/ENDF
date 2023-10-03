@@ -66,11 +66,12 @@ try:
         archive = zipfile.ZipFile(zip_file, 'r')
         for dat_file in archive.namelist():
             res = conn.execute("SELECT id from Files where name = %s and path = %s and zip_file = %s",[dat_file,rel_path, filename])
-            if res is not None:
+            if res:
                 file_key = res[0][0]
             else: 
                 file_key = DBConnection.getNextId()           
                 conn.execute("INSERT INTO Files (id,name,path,zip_file) VALUES(%s,%s,%s,%s)",[file_key,dat_file,rel_path, filename])
+                conn.commit()
 
             print("Parsing file: %s in zip %s at %s" % (dat_file,zip_file,rel_path))
             tape = ENDFTape(dat_file,archive)
