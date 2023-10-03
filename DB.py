@@ -65,10 +65,13 @@ class DBConnection():
             self.cursor.execute(query,binds)
             res = self.cursor.fetchall()
         except Exception as error:
+            print("ERROR: executing statement: %s" % (query))
+            print("ERROR: with binds: %s" % (binds))
             print(error)
             traceback.print_exc()
             if self.conn:
                 self.rollback()
+            raise error
         return res
     
     def executemany(self,query: str,binds: list = None) -> list:
@@ -79,10 +82,13 @@ class DBConnection():
             self.cursor.executemany(query,binds)
             res = self.cursor.fetchall()
         except Exception as error:
+            print("ERROR: executing statement: %s" % (query))
+            print("ERROR: with binds: %s" % (binds))
             print(error)
             traceback.print_exc()
             if self.conn:
                 self.rollback()
+            raise error
         return res
 
     
@@ -100,10 +106,24 @@ class DBConnection():
     @classmethod
     def getNextId(cls) -> int:
         if(len(cls._id_pool) == 0):
-            conn = cls.getConnection()
-            res = conn.execute("SELECT NEXTVAL(id_seq),increment from id_seq")
-            #res = cls.singleQuery("SELECT NEXTVAL(id_seq),increment from id_seq")
-            next_val = res[0][0]
-            increment = res[0][1]
-            cls._id_pool.extend(range(next_val,next_val+increment))
+            print("INFO: id pool empty, querying for more")
+            cls.fill_pool()
         return cls._id_pool.pop(0)
+    
+    @classmethod
+    def get_ids(cls, nIds: int) -> list:
+        while len(cls._id_pool)<nIds:
+            cls.fill_pool()
+        ret_ids = cls._id_pool[0:nIds]
+        del cls._id_pool[0:nIds]
+        return ret_ids
+    
+    @classmethod
+    def fill_pool(cls) -> None:
+        conn = cls.getConnection()
+        res = conn.execute("SELECT NEXTVAL(id_seq),increment from id_seq")
+        #res = cls.singleQuery("SELECT NEXTVAL(id_seq),increment from id_seq")
+        next_val = res[0][0]
+        increment = res[0][1]
+        print("DEBUG: Adding values %d to %d to id pool"  % (next_val,next_val+increment))
+        cls._id_pool.extend(range(next_val,next_val+increment))

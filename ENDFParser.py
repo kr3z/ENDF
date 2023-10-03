@@ -1,13 +1,13 @@
-import re
 import math
 from enum import Enum
 import traceback
 import io
 import time
-import numpy
+import numpy as np
+import pandas as pd
 from DB import DBConnection
 
-BATCH_SIZE = 1000
+BATCH_SIZE = 10000
 
 class ENDFRecordType(Enum):
     TEXT = 1
@@ -24,13 +24,6 @@ class ENDFRecordType(Enum):
     TEND = 12
     TPID = 13
     UNDEF = 14
-
-class ENDException(Exception):
-    "Exception used to signal TEND/MEND/FEND/SEND found"
-    def __init__(self,type):
-        self.type = type
-    def getType(self):
-        return self.type
 
 class NotImplementedYetException(Exception):
     pass
@@ -55,319 +48,209 @@ class ENDFPersistable:
     def setFileKey(self,key):
         self.file_key = key
 
-class ENDFRecord:
-    def __init__(self, data):
-        #print(data)
-        try:
-            self.content = data[:66]
-            self.MAT = int(data[66:70])
-            self.MF = int(data[70:72])
-            self.MT = int(data[72:75])
-        except:
-            print("Failed to parse data: %s" % (data))
-            raise
-        # NS is optional
-        self.NS = None
-        try:
-            self.NS = int(data[75:80])
-        except ValueError:
-            pass
-
-        #set type to none for now
-        self.type = None
-
-        # check if some type of END record
-        try:
-            C1, C2, L1, L2, N1, N2 = self.parseCONT()
-            if C1 == 0.0 and C2 == 0.0 and L1 == 0 and L2 == 0 and N1 == 0 and N2 == 0:
-                if self.MT==0 and self.MF==0 and self.MAT==-1:
-                    self.type = ENDFRecordType.TEND
-                elif self.MT == 0 and self.MF == 0 and self.MAT == 0:
-                    self.type = ENDFRecordType.MEND
-                elif self.MT == 0 and self.MF == 0 and self.MAT > 0 and self.NS != 99999:
-                    self.type = ENDFRecordType.FEND
-                elif (self.MT == 0 and self.MF > 0 and self.MAT > 0) or self.NS == 99999:
-                    self.type = ENDFRecordType.SEND
-                #print(self.type)
-        except (AttributeError,ValueError,TypeError,OverflowError) as error:
-            # Not an END record
-            #print(error)
-            pass
-
-    re_float = re.compile("^(?P<sign>[ +-])? *(?P<significand>[0-9.]+)[ D]*(?P<expsign>[+-])? ?(?P<exp>[0-9]+)? *$")
-    def parseFloat(floatStr):
-        try:
-            return float(floatStr)
-        except ValueError:
-            match = ENDFRecord.re_float.match(floatStr)
-            fl = float(match.group('significand'))
-            if match.group('sign')=='-':
-                fl = fl * -1.0
-            exp = int(match.group('exp'))
-            if exp>0:
-                if match.group('expsign')=='-':
-                    exp = exp*-1
-                fl = fl * 10**exp
-            return round(fl,9)
-        
-    def parseFloat_new(floatStr):
-        floatStr = "".join(floatStr.split())
-        if floatStr.find('e')==-1 and floatStr.find('E')==-1:
-            i_plus = floatStr.rfind('+')
-            i_minus = floatStr.rfind('-')
-            idx = (i_plus if i_plus>i_minus else i_minus)
+def parseFloat(floatStr):
+    floatStr = "".join(floatStr.split()).replace('D', 'E')
+    if floatStr.find('e')==-1 and floatStr.find('E')==-1:
+        i_plus = floatStr.rfind('+')
+        i_minus = floatStr.rfind('-')
+        idx = (i_plus if i_plus>i_minus else i_minus)
+        if idx > 0:
             efloatStr=floatStr[0:idx]+'E'+floatStr[idx:]
             floatStr=efloatStr
-        return round(float(floatStr),9)
+    return float(floatStr)
 
-    def setTPID(self):
-        if not(self.MT==0 and self.MF==0):
-            raise Exception("Not a valid TPID record! MAT: %s MF: %s MT: %s" % (self.MAT, self.MF, self.MT))
-        self.type = ENDFRecordType.TPID
+def parse_row(row: str,type_parsers: list) -> list:
+    ret = []
+    idx = 0
+    while idx < 6:
+        val_str = row[idx*11:(idx+1)*11].strip()
+        ret.append(type_parsers[idx](val_str) if val_str else 0)
+        idx += 1
 
-    def getContent(self):
-        return self.content
-    def getMAT(self):
-        return self.MAT
-    def getMF(self):
-        return self.MF
-    def getMT(self):
-        return self.MT
-    def getNS(self):
-        return self.NS
-    def getType(self):
-        return self.type
+    return ret
 
-    def isTEND(self):
-        return self.type == ENDFRecordType.TEND
-    def isMEND(self):
-        return self.type == ENDFRecordType.MEND
-    def isFEND(self):
-        return self.type == ENDFRecordType.FEND
-    def isSEND(self):
-        return self.type == ENDFRecordType.SEND
+def parseCONT(row):
+    return parse_row(row, [parseFloat,parseFloat,int,int,int,int])
 
-    def parseCONT(self):
-        C1_str = self.content[:11]
-        C2_str = self.content[11:22]
-        L1_str = self.content[22:33]
-        L2_str = self.content[33:44]
-        N1_str = self.content[44:55]
-        N2_str = self.content[55:66]
+def parseList(data,NC):
+    C = []
+    for row in data.to_list():
+        C.extend(parse_row(row, [parseFloat,parseFloat,parseFloat,parseFloat,parseFloat,parseFloat]))
+    return C[:NC]
 
-        C1 = 0.0 if C1_str.strip()=='' else ENDFRecord.parseFloat(C1_str)
-        C2 = 0.0 if C2_str.strip()=='' else ENDFRecord.parseFloat(C2_str)
-        L1 = 0 if L1_str.strip()=='' else int(L1_str)
-        L2 = 0 if L2_str.strip()=='' else int(L2_str)
-        N1 = 0 if N1_str.strip()=='' else int(N1_str)
-        N2 = 0 if N2_str.strip()=='' else int(N2_str)
-        return C1, C2, L1, L2, N1, N2
-    
-    def parseTAB1(self,NR,NP,file):
-        NBT = []
-        INT = []
-        X = []
-        Y = []
-        recs_read = []
-        #interp_lines = int(NR/3)+1
-        #xy_lines = int(NP/3)+1
-        interp_lines = math.ceil(NR/3)
-        xy_lines = math.ceil(NP/3)
-        for _ in range(0,interp_lines):
-            rec = ENDFRecord(file.readline())
-            recs_read.append(rec)
-            NBT1_str = rec.content[:11]
-            INT1_str = rec.content[11:22]
-            NBT2_str = rec.content[22:33]
-            INT2_str = rec.content[33:44]
-            NBT3_str = rec.content[44:55]
-            INT3_str = rec.content[55:66]
-            NBT.append(0 if NBT1_str.strip()=='' else int(NBT1_str))
-            NBT.append(0 if NBT2_str.strip()=='' else int(NBT2_str))
-            NBT.append(0 if NBT3_str.strip()=='' else int(NBT3_str))
-            INT.append(0 if INT1_str.strip()=='' else int(INT1_str))
-            INT.append(0 if INT2_str.strip()=='' else int(INT2_str))
-            INT.append(0 if INT3_str.strip()=='' else int(INT3_str))
-        for _ in range(0,xy_lines):
-            rec = ENDFRecord(file.readline())
-            recs_read.append(rec)
-            X1_str = rec.content[:11]
-            Y1_str = rec.content[11:22]
-            X2_str = rec.content[22:33]
-            Y2_str = rec.content[33:44]
-            X3_str = rec.content[44:55]
-            Y3_str = rec.content[55:66]
-            X.append(0.0 if X1_str.strip()=='' else ENDFRecord.parseFloat(X1_str))
-            X.append(0.0 if X2_str.strip()=='' else ENDFRecord.parseFloat(X2_str))
-            X.append(0.0 if X3_str.strip()=='' else ENDFRecord.parseFloat(X3_str))
-            Y.append(0.0 if Y1_str.strip()=='' else ENDFRecord.parseFloat(Y1_str))
-            Y.append(0.0 if Y2_str.strip()=='' else ENDFRecord.parseFloat(Y2_str))
-            Y.append(0.0 if Y3_str.strip()=='' else ENDFRecord.parseFloat(Y3_str))
-        return NBT[:NR], INT[:NR], X[:NP], Y[:NP], recs_read
+def parseTAB1(NR,NP,interp_data,xy_data):
+    NBTINT = []
+    XY = []
+    for row in interp_data.to_list():
+        NBTINT.extend(parse_row(row,[int,int,int,int,int,int]))
+    for row in xy_data.to_list():
+        XY.extend(parse_row(row,[parseFloat,parseFloat,parseFloat,parseFloat,parseFloat,parseFloat]))
 
-    def parseList(self,file,NC):
-        C = []
-        recs_read = []
-        lines = math.ceil(NC/6)
-        for _ in range(0,lines):
-            rec = ENDFRecord(file.readline())
-            recs_read.append(rec)
-            C1_str = rec.content[:11]
-            C2_str = rec.content[11:22]
-            C3_str = rec.content[22:33]
-            C4_str = rec.content[33:44]
-            C5_str = rec.content[44:55]
-            C6_str = rec.content[55:66]
-            C.append(0.0 if C1_str.strip()=='' else ENDFRecord.parseFloat(C1_str))
-            C.append(0.0 if C2_str.strip()=='' else ENDFRecord.parseFloat(C2_str))
-            C.append(0.0 if C3_str.strip()=='' else ENDFRecord.parseFloat(C3_str))
-            C.append(0.0 if C4_str.strip()=='' else ENDFRecord.parseFloat(C4_str))
-            C.append(0.0 if C5_str.strip()=='' else ENDFRecord.parseFloat(C5_str))
-            C.append(0.0 if C6_str.strip()=='' else ENDFRecord.parseFloat(C6_str))
-        return C[:NC], recs_read
+    NBT = NBTINT[0::2]
+    INT = NBTINT[1::2]
+    X = XY[0::2]
+    Y = XY[1::2]
+
+    return NBT[:NR], INT[:NR], X[:NP], Y[:NP]
 
 class ENDFSection(ENDFPersistable):
-    def __init__(self, head, file):
-        if head.isFEND():
-            raise ENDException(ENDFRecordType.FEND)
-        self.MT = head.getMT()
-        self.file = head.getMF()
-        self.material = head.getMAT()
+    def __init__(self, data):
+        self.timings = {"total": 0, "lib": 0, "mat": 0, "gi": 0, "dir": 0, "csinfo": 0, "interp": 0, "csdata": 0}
+        self.material = int(data.iat[0,1])
+        self.file     = int(data.iat[0,2])
+        self.MT       = int(data.iat[0,3])
+
         self.mat_key = None
         self.lib_key = None
         self.file_key = None
+
+        bad_MT = data[data['MT']!=self.MT]
+        if len(bad_MT.index>0):
+            print("MT should be %s but found other values: %s" % (self.MT, bad_MT))
+            raise Exception("Bad MT values")
+        
         self.parsed = True
-        self.records = [head]
-        self.timings = {"total": 0, "lib": 0, "mat": 0, "gi": 0, "dir": 0, "csinfo": 0, "interp": 0, "csdata": 0}
-#        print("%s %s" % (head.content,head.MT))
+        idx = 0
+        
         try:
-            if self.file == 1:
-                if self.MT == 451:
-                    self.ZA, self.AWR, self.LRP, self.LFI, self.NLIB, self.NMOD = head.parseCONT()
-                    rec = ENDFRecord(file.readline())
-                    self.records.append(rec)
-                    self.ELIS, self.STA, self.LIS, self.LISO, _, self.NFOR = rec.parseCONT()
-
-                    rec = ENDFRecord(file.readline())
-                    self.records.append(rec)
-                    self.AWI, self.EMAX, self.LREL, _, self.NSUB, self.NVER = rec.parseCONT()
-
-                    rec = ENDFRecord(file.readline())
-                    self.records.append(rec)
-                    self.TEMP, _, self.LDRV, _, self.NWD, self.NXC = rec.parseCONT()
+            if self.file == 1: # General Information
+                # Descriptive Data and Directory
+                if self.MT == 451: 
+                    self.ZA, self.AWR, self.LRP, self.LFI, self.NLIB, self.NMOD = parseCONT(data.iat[idx,0])
+                    idx += 1
+                    self.ELIS, self.STA, self.LIS, self.LISO, _, self.NFOR = parseCONT(data.iat[idx,0])
+                    idx += 1
+                    self.AWI, self.EMAX, self.LREL, _, self.NSUB, self.NVER = parseCONT(data.iat[idx,0])
+                    idx += 1
+                    self.TEMP, _, self.LDRV, _, self.NWD, self.NXC = parseCONT(data.iat[idx,0])
+                    idx += 1
 
                     self.desc = ""
                     self.section_data = []
                     for i in range(0,self.NWD):
-                        rec = ENDFRecord(file.readline())
-                        self.records.append(rec)
-                        self.desc = self.desc + rec.getContent() + '\n'
+                        self.desc = self.desc + '\n' + data.iat[idx+i,0]
+                    idx += self.NWD
                     for i in range(0,self.NXC):
-                        rec = ENDFRecord(file.readline())
-                        if rec.isSEND():
-                            return
-                        self.records.append(rec)
-                        _, _, MF, MT, NC, MOD = rec.parseCONT()
+                        _, _, MF, MT, NC, MOD = parseCONT(data.iat[idx+i,0])
                         self.section_data.append([MF,MT,NC,MOD])
-                        
-                    #SEND = ENDFRecord(file.readline())
-                    #if not SEND.isSEND():
-                    #    print("content: %s MAT: %s MF: %s MT: %s NS: %s" % (SEND.getContent(), SEND.getMAT(), SEND.getMF(), SEND.getMT(), SEND.getNS()))
-                    #    raise Exception("ERROR: Record exists where SEND should be")
+                    idx += self.NXC
 
+                # 452: Number of Neutrons per Fission
+                # 456: Number of Prompt Neutrons per Fission
                 elif self.MT == 452 or self.MT == 456:
-                    self.ZA, self.AWR, _, self.LNU, _, _ = head.parseCONT()
-                    rec = ENDFRecord(file.readline())
-                    self.records.append(rec)
+                    self.ZA, self.AWR, _, self.LNU, _, _ = parseCONT(data.iat[0,0])
                     if self.LNU == 1:
-                        _, _, _, _, self.NC, _ = rec.parseCONT()
-                        self.C, recs = rec.parseList(file,self.NC)
+                        _, _, _, _, self.NC, _ = parseCONT(data.iat[1,0])
+                        self.C = parseList(data.iloc[2:2+math.ceil(self.NC/6), 0],self.NC)
                     elif self.LNU == 2:
-                        _, _, _, _, self.NR, self.NP = rec.parseCONT()
-                        self.NBT, self.INT, self.X, self.Y, recs = rec.parseTAB1(self.NR,self.NP,file)
+                        _, _, _, _, self.NR, self.NP = parseCONT(data.iat[1,0])
+                        interp_lines = math.ceil(self.NR/3)
+                        interp_data = data.iloc[2:2+interp_lines, 0]
+                        xy_lines = math.ceil(self.NP/3)
+                        xy_data = data.iloc[2+interp_lines:2+interp_lines+xy_lines, 0]
+                        self.NBT, self.INT, self.X, self.Y = parseTAB1(self.NR,self.NP, interp_data, xy_data)
                     else:
                         raise Exception("Invalid LNU option for MF=%s MT=%s, LNU: %s" % (self.file,self.MT,self.LNU))
-                    self.records.extend(recs)
+                    
+                # Delayed Neutron Data
                 elif self.MT == 455:
-                    self.ZA, self.AWR, self.LDG, self.LNU, _, _ = head.parseCONT()
+                    self.ZA, self.AWR, self.LDG, self.LNU, _, _ = parseCONT(data.iat[idx,0])
+                    idx += 1
                     if self.LDG == 0:
-                        rec = ENDFRecord(file.readline())
-                        self.records.append(rec)
-                        _, _, _, _, self.NNF, _ = rec.parseCONT()
-                        self.decay_constant, recs = rec.parseList(file,self.NNF)
-                        self.records.extend(recs)
-                        rec = ENDFRecord(file.readline())
-                        self.records.append(rec)
-                        _, _, _, _, self.NR, self.NP = rec.parseCONT()
+                        _, _, _, _, self.NNF, _ = parseCONT(data.iat[idx,0])
+                        idx += 1
+                        self.decay_constant = parseList(data.iloc[idx:idx+math.ceil(self.NNF/6), 0],self.NNF)
+                        idx += math.ceil(self.NNF/6)
+                        _, _, _, _, self.NR, self.NP = parseCONT(data.iat[idx,0])
+                        idx += 1
                         if self.LNU == 1:
-                            self.Vd, recs = rec.parseList(file,1)
+                            self.Vd = parseList(data.iloc[idx:idx+1, 0],1)
+                            idx += 1
                         elif self.LNU == 2:
-                            self.NBT, self.INT, self.X, self.Y, recs = rec.parseTAB1(self.NR,self.NP,file)
+                            interp_lines = math.ceil(self.NR/3)
+                            interp_data = data.iloc[idx:idx+interp_lines, 0]
+                            idx += interp_lines
+                            xy_lines = math.ceil(self.NP/3)
+                            xy_data = data.iloc[idx:idx+xy_lines, 0]
+                            idx += xy_lines
+                            self.NBT, self.INT, self.X, self.Y = parseTAB1(self.NR,self.NP,interp_data,xy_data)
                         else:
                             raise Exception("Invalid LNU value: LNU=%s" % (self.LNU))
-                        self.records.extend(recs)
                     elif self.LDG == 1:
+                        #TODO: implement
                         raise NotImplementedYetException("MF: %s MT: %s" % (self.file, self.MT))
                     else:
                         raise Exception("Invalid LDG value: LNU=%s" % (self.LDG))
 
+                #  Components of Energy Release Due to Fission
                 elif self.MT == 458:
-                    self.ZA, self.AWR, _, self.LFC, _, self.NFC = head.parseCONT()
-                    rec = ENDFRecord(file.readline())
-                    self.records.append(rec)
-                    _, _, _, self.NPLY, self.N1, self.N2 = rec.parseCONT()
-                    self.C, recs = rec.parseList(file,self.N1)
-                    self.records.extend(recs)
+                    self.ZA, self.AWR, _, self.LFC, _, self.NFC = parseCONT(data.iat[idx,0])
+                    idx += 1
+                    _, _, _, self.NPLY, self.N1, self.N2 = parseCONT(data.iat[idx,0])
+                    idx += 1
+                    self.C = parseList(data.iloc[idx:idx+math.ceil(self.N1/6), 0],self.N1)
+                    idx += math.ceil(self.N1/6)
+
                     if self.LFC == 1:
                         self.EIFC = []
                         for _ in range (0,self.NFC):
-                            rec = ENDFRecord(file.readline())
-                            self.records.append(rec)
-                            _, _, LDRV, IFC, NR, NP = rec.parseCONT()
-                            NBT, INT, X, Y, recs = rec.parseTAB1(NR,NP,file)
-                            self.EIFC.append([LDRV, IFC, NR, NP, NBT, INT, X, Y])
-                            self.records.extend(recs)
+                            _, _, LDRV, IFC, NR, NP = parseCONT(data.iat[idx,0])
+                            idx += 1
 
+                            interp_lines = math.ceil(NR/3)
+                            interp_data = data.iloc[idx:idx+interp_lines, 0]
+                            idx += interp_lines
+                            xy_lines = math.ceil(NP/3)
+                            xy_data = data.iloc[idx:idx+xy_lines, 0]
+                            idx += xy_lines
+
+                            NBT, INT, X, Y = parseTAB1(NR,NP,interp_data,xy_data)
+                            self.EIFC.append([LDRV, IFC, NR, NP, NBT, INT, X, Y])
+
+                #  Delayed Photon Data
                 elif self.MT == 460:
-                    self.ZA, self.AWR, self.LO, _,  self.NG, _ = head.parseCONT()
+                    self.ZA, self.AWR, self.LO, _,  self.NG, _ = parseCONT(data.iat[idx,0])
+                    idx += 1
                     if self.LO == 1:
                         self.T = []
                         for _ in range (0,self.NG):
-                            rec = ENDFRecord(file.readline())
-                            self.records.append(rec)
-                            E, _, iNG, _, NR, NP = rec.parseCONT()
-                            NBT, INT, X, Y, recs = rec.parseTAB1(NR,NP,file)
+                            E, _, iNG, _, NR, NP = parseCONT(data.iat[idx,0])
+                            idx += 1
+
+                            interp_lines = math.ceil(NR/3)
+                            interp_data = data.iloc[idx:idx+interp_lines, 0]
+                            idx += interp_lines
+                            xy_lines = math.ceil(NP/3)
+                            xy_data = data.iloc[idx:idx+xy_lines, 0]
+                            idx += xy_lines
+
+                            NBT, INT, X, Y = parseTAB1(NR,NP,interp_data,xy_data)
                             self.T.append([E, iNG, NR, NP, NBT, INT, X, Y])
-                            self.records.extend(recs)
                     elif self.LO == 2:
-                        rec = ENDFRecord(file.readline())
-                        self.records.append(rec)
-                        _, _, _, _, _, self.NNF = rec.parseCONT()
-                        self.C, recs = rec.parseList(file,self.NNF)
-                        self.records.extend(recs)
+                        _, _, _, _, _, self.NNF = parseCONT(data.iat[idx,0])
+                        idx += 1
+                        self.C = parseList(data.iloc[idx:idx+math.ceil(self.NNF/6), 0],self.NNF)
+                        idx += math.ceil(self.NNF/6)
 
                     else:
                         raise Exception("Invalid LO value: LO=%s" % (self.LO))
-
                 else:
                     raise NotImplementedYetException("MF: %s MT: %s" % (self.file, self.MT))
-                SEND = ENDFRecord(file.readline())
-                if not SEND.isSEND():
-                    print("content: %s MAT: %s MF: %s MT: %s NS: %s" % (SEND.getContent(), SEND.getMAT(), SEND.getMF(), SEND.getMT(), SEND.getNS()))
-                    raise Exception("ERROR: Record exists where SEND should be")
-
+            
+            # Reaction Cross Sections
             elif self.file == 3:
-                self.ZA, self.AWR, _, _, _, _ = head.parseCONT()
-                rec = ENDFRecord(file.readline())
-                self.records.append(rec)
-                self.QM, self.QI, _, self.LR, self.NR, self.NP = rec.parseCONT()
-                self.NBT, self.INT, self.X, self.Y, recs = rec.parseTAB1(self.NR,self.NP,file)
-                self.records.extend(recs)
-                
-                SEND = ENDFRecord(file.readline())
-                if not SEND.isSEND():
-                    print("content: %s MAT: %s MF: %s MT: %s NS: %s" % (SEND.getContent(), SEND.getMAT(), SEND.getMF(), SEND.getMT(), SEND.getNS()))
-                    raise Exception("ERROR: Record exists where SEND should be")
+                self.ZA, self.AWR, _, _, _, _ = parseCONT(data.iat[idx,0])
+                idx += 1
+                self.QM, self.QI, _, self.LR, self.NR, self.NP = parseCONT(data.iat[idx,0])
+                idx += 1
+
+                interp_lines = math.ceil(self.NR/3)
+                interp_data = data.iloc[idx:idx+interp_lines, 0]
+                idx += interp_lines
+                xy_lines = math.ceil(self.NP/3)
+                xy_data = data.iloc[idx:idx+xy_lines, 0]
+                idx += xy_lines
+                self.NBT, self.INT, self.X, self.Y = parseTAB1(self.NR,self.NP,interp_data,xy_data)
 
             else:
                 raise NotImplementedYetException("MF: %s MT: %s" % (self.file, self.MT))
@@ -375,12 +258,6 @@ class ENDFSection(ENDFPersistable):
         #TODO Parse other MTs
         except NotImplementedYetException:
             self.parsed = False 
-            while(True):
-                rec = ENDFRecord(file.readline())
-                if rec.isSEND():
-                    break
-                self.records.append(rec)
-        #print("Parsed Section: MAT=%s MF=%s MT=%s" % (self.material, self.file, self.MT))
             
     def persist(self):
         conn = DBConnection.getConnection()
@@ -390,6 +267,8 @@ class ENDFSection(ENDFPersistable):
         if self.file == 1 and self.MT == 451:
             #Persist Library
             t_lib_begin = time.perf_counter()
+            #print("%s %s %s %s %s" % (self.NLIB.item(0),self.NSUB.item(0),self.NVER.item(0),self.LREL.item(0),self.NFOR.item(0)))
+            #raise
             res = conn.execute("SELECT id FROM Library WHERE NLIB=%s and NSUB=%s and NVER=%s and LREL=%s and NFOR=%s",
                           [self.NLIB,self.NSUB,self.NVER,self.LREL,self.NFOR])
             if res:
@@ -397,7 +276,7 @@ class ENDFSection(ENDFPersistable):
                 self.lib_key = res[0][0]
             else:
                 print("Persisting Library")
-                IPART = str(self.NSUB)[0:-1]
+                IPART = str(self.NSUB)[0:-1] if len(str(self.NSUB))>1 else 0
                 ITYPE = str(self.NSUB)[-1:]
                 self.lib_key = DBConnection.getNextId()
                 conn.execute("INSERT INTO Library(id,NLIB,NVER,LREL,NSUB,NFOR,IPART,ITYPE) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -437,8 +316,9 @@ class ENDFSection(ENDFPersistable):
             res = conn.execute("SELECT 1 FROM Directory WHERE general_info_key=%s LIMIT 1",[gi_key])
             if not res:
                 data = []
+                dir_keys = DBConnection.get_ids(len(self.section_data))
                 for i in range(0,len(self.section_data)):
-                    dir_key = DBConnection.getNextId()
+                    dir_key = dir_keys[i]
                     entry = [dir_key,gi_key]
                     entry.extend(self.section_data[i])
                     data.append(entry)
@@ -465,8 +345,9 @@ class ENDFSection(ENDFPersistable):
                            [cs_key,self.MT,self.file])
             if not res:
                 data = []
+                i_keys = DBConnection.get_ids(self.NR)
                 for i in range(0,self.NR):
-                    i_key = DBConnection.getNextId()
+                    i_key = i_keys[i]
                     data.append([i_key,cs_key,self.MT,self.file,self.NBT[i],self.INT[i]])
                 for i in range(0,len(data),BATCH_SIZE):
                     conn.executemany("INSERT INTO Interpolation(id,info_key,MT,MF,NBT,InterpolationScheme) VALUES(%s,%s,%s,%s,%s,%s)",
@@ -478,8 +359,9 @@ class ENDFSection(ENDFPersistable):
                            [cs_key])
             if not res:
                 data = []
+                csd_keys = DBConnection.get_ids(self.NP)
                 for i in range(0,self.NP):
-                    csd_key = DBConnection.getNextId()
+                    csd_key = csd_keys[i]
                     data.append([csd_key,cs_key,self.MT,self.X[i],self.Y[i]])
                     if (self.X[i] != self.X[i]) or (self.Y[i] != self.Y[i]):
                         raise NaNException
@@ -508,34 +390,38 @@ class ENDFSection(ENDFPersistable):
 
 
 class ENDFFile(ENDFPersistable):
-    def __init__(self, head, file):
-        #print("file head: MAT: %s MF: %s MT: %s" % (head.getMAT(),head.getMF(), head.getMT()))
-        if head.isMEND():
-            raise ENDException(ENDFRecordType.MEND)
-        self.file = head.getMF()
-        self.material = head.getMAT()
+    def __init__(self,data):
+        self.timings = {"total": 0, "lib": 0, "mat": 0, "gi": 0, "dir": 0, "csinfo": 0, "interp": 0, "csdata": 0}
+        self.material = int(data.iat[0,1])
+        self.file     = int(data.iat[0,2])
+
         self.mat_key = None
         self.lib_key = None
-        self.file_key = None
-        self.sections = {}
-        self.timings = {"total": 0, "lib": 0, "mat": 0, "gi": 0, "dir": 0, "csinfo": 0, "interp": 0, "csdata": 0}
-        section = ENDFSection(head,file)
-        self.sections[section.getMT()] = section
-        if self.file == 1:
-            self.section_data = section.getSectionData()
-        try:
-            while(True):
-                head = ENDFRecord(file.readline())
-                section = ENDFSection(head,file)
-                self.sections[section.getMT()] = section
-        except ENDException as e:
-            #print("Found END Record: %s" % (e.getType()))
-            print("Finished parsing file MF: %d" % self.file)
 
-        #Validation
+        bad_MF = data[data['MF']!=self.file]
+        if len(bad_MF.index>0):
+            print("MF should be %s but found other values: %s" % (self.file,bad_MF))
+            raise Exception("Bad MF values")
+
+        # Find SENDs in file
+        SENDs = data.index[(data['MAT'] == self.material) & (data['MF']==self.file) & (data['MT']==0)]
+        #print(SENDs)
+        #print(len(data.index))
+        #print(data)
+        if SENDs[-1] != len(data.index)-1:
+            raise Exception("Data after last SEND")
+        
+        #Split file into Sections
+        section_start = 0
+        self.sections = []
+        for SEND in SENDs:
+            section = data.iloc[section_start : SEND]
+            section.index = range(len(section.index))
+            section_start = SEND+1
+            self.sections.append(ENDFSection(section))
 
     def persist(self):
-        for section in self.sections.values():
+        for section in self.sections:
             section.setFileKey(self.file_key)
             try:
                 if self.mat_key is not None and self.lib_key is not None:
@@ -570,35 +456,35 @@ class ENDFFile(ENDFPersistable):
 
 
 class ENDFMaterial(ENDFPersistable):
-    def __init__(self, file):
-        head = ENDFRecord(file.readline())
-        if head.isTEND():
-            raise ENDException(ENDFRecordType.TEND)
-        self.material = head.getMAT();
+    def __init__(self, data):
+        self.timings = {"total": 0, "lib": 0, "mat": 0, "gi": 0, "dir": 0, "csinfo": 0, "interp": 0, "csdata": 0}
+        self.material = int(data.iat[0,1])
         self.mat_key = None
         self.lib_key = None
-        self.file_key = None
-        file1 = ENDFFile(head,file)
-        section_data = file1.getSectionData()
-        self.timings = {"total": 0, "lib": 0, "mat": 0, "gi": 0, "dir": 0, "csinfo": 0, "interp": 0, "csdata": 0}
-        #self.files = [file1]
-        self.files = {}
-        self.files[file1.getFile()] = file1
-        try:
-            while(True):
-                head = ENDFRecord(file.readline())
-                #print("in mat file head: MAT: %s MF: %s MT: %s" % (head.getMAT(),head.getMF(), head.getMT()))
-                endffile = ENDFFile(head,file)
-                self.files[endffile.getFile()] = endffile
-        except ENDException as e:
-            #print("Found END Record: %s" % (e.getType()))
-            print("Finished parsing Material MAT: %d" % self.material)
-            for timing in self.timings:
-                if self.timings.get(timing) > .001:
-                    print(f"Persisted {timing} in {self.timings.get(timing):0.4f} seconds")           
+        bad_MAT = data[data['MAT']!=self.material]
+        if len(bad_MAT.index>0):
+            print("MAT should be %s but found other values: %s" % (self.material,bad_MAT))
+            raise Exception("Bad MAT values")
+        
+        # Find FENDs in material
+        FENDs = data.index[(data['MAT'] == self.material) & (data['MF']==0) & (data['MT']==0)]
+        #print(FENDs)
+        #print(len(data.index))
+        #print(data)
+        if FENDs[-1] != len(data.index)-1:
+            raise Exception("Data after last FEND")
+        
+        #Split MAT into Files
+        file_start = 0
+        self.files = []
+        for FEND in FENDs:
+            file = data.iloc[file_start : FEND]
+            file.index = range(len(file.index))
+            file_start = FEND+1
+            self.files.append(ENDFFile(file))     
                 
     def persist(self):
-        for file in self.files.values():
+        for file in self.files:
             file.setFileKey(self.file_key)
             if self.mat_key is not None and self.lib_key is not None:
                 file.setMaterialKey(self.mat_key)
@@ -632,66 +518,49 @@ class ENDFTape:
         file = None
         try:
             self.materials = []
-            #with open(self.filename, "r") as file:
             if self.zip:
                 file = io.TextIOWrapper(self.archive.open(self.filename, "r"),encoding ='ISO-8859-1')
             else:
                 file = open(self.filename, "r", encoding ='ISO-8859-1')
-            # First record is TPID
-            rec = ENDFRecord(file.readline())
-            rec.setTPID()
-            self.TPID = rec
-            self.NTAPE = rec.getMAT()
-                
-            # Parse Materials until TEND
-            while(True):
-                self.materials.append(ENDFMaterial(file))
+            data = pd.DataFrame(np.genfromtxt(file, dtype="U66,i2,i1,i2,i4", names=['content','MAT','MF','MT','NS'],
+                delimiter=[66,4,2,3,5], comments=None))
+            
+            nRows = len(data.index)
+            
+            #Find TEND indexes
+            TENDs = data.index[(data['MAT']==-1) & (data['MF']==0) & (data['MT']==0)].to_list()
+
+            #Should only be one TEND per tape
+            if len(TENDs)>1:
+                raise Exception("Tape has more than one TEND: %s" % (TENDs))
+            
+            TEND_idx = TENDs[0]
+
+            if TEND_idx!=nRows-1:
+                raise Exception("TEND is not last row in tape")
+
+            self.TPID = data.iloc[0]
+            self.NTAPE = data.iat[0,1]
+
+            tape = data.iloc[1:TEND_idx]
+            tape.index = range(len(tape.index))
+
+            # Find MENDs in tape
+            MENDs = tape.index[(tape['MAT']==0) & (tape['MF']==0) & (tape['MT']==0)]
+            if MENDs[-1] != len(tape.index)-1:
+                raise Exception("Data after last MEND")
+            
+            #Split tape into MATs
+            MAT_start = 0
+            for MEND in MENDs:
+                MAT = tape.iloc[MAT_start : MEND]
+                MAT.index = range(len(MAT.index))
+                MAT_start = MEND+1
+                self.materials.append(ENDFMaterial(MAT))
 
 
         except IOError:
             print('Error While Opening File: %s' % (self.filename))  
-        except ENDException as e:
-            #print("Found END Record: %s" % (e.getType()))
-            print("Finished parsing tape: %s" % (self.filename))
-        finally:
-            if file is not None:
-                file.close()
-
-    def parseTape_new(self):
-        file = None
-        try:
-            self.materials = []
-            if self.zip:
-                file = io.TextIOWrapper(self.archive.open(self.filename, "r"),encoding ='ISO-8859-1')
-            else:
-                file = open(self.filename, "r", encoding ='ISO-8859-1')
-            data = numpy.genfromtxt(file, dtype="U66,i2,i1,i2,i4", names=['content','MAT','MF','MT','NS'],
-                delimiter=[66,4,2,3,5])
-
-            #print(type(data['MAT']))
-            #print(data['MAT'])
-            print(numpy.unique(data['MAT'], return_counts=True))
-            print(numpy.argwhere((data['MF']==0) & (data['MAT']!=0)))
-            idx13 = numpy.argwhere(data['MAT']==13)
-            print(data[idx13])
-            # First record is TPID
-            rec = ENDFRecord(data[0])
-            rec.setTPID()
-            self.TPID = rec
-            self.NTAPE = rec.getMAT()
-                
-            # Parse Materials until TEND
-            nrec = len(data)
-            #while(True):
-            for i in range(1,nrec):
-                self.materials.append(ENDFMaterial(data[i]))
-
-
-        except IOError:
-            print('Error While Opening File: %s' % (self.filename))  
-        except ENDException as e:
-            #print("Found END Record: %s" % (e.getType()))
-            print("Finished parsing tape: %s" % (self.filename))
         finally:
             if file is not None:
                 file.close()
@@ -727,7 +596,14 @@ class ENDFTape:
 #tape = ENDFTape("g_9234_92-U-234.dat")
 #tape = ENDFTape("decay_0131_1-H-3.dat")
 #tape = ENDFTape("IRDF82.SL")
-#tape.parseTape_new()
+#tape = ENDFTape("n_5613_56-Ba-133M.dat")
+#tape.parseTape()
+
+#line='           0                 0.0 1.0000000-5-1.234567+1 + 1.2 +2  '
+#CONT = np.genfromtxt(StringIO(line), dtype="f8,f8,f8,f8,f8,f8", names=['C1', 'C2', 'L1', 'L2', 'N1', 'N2'],
+#                delimiter=[11,11,11,11,11,11], autostrip=True, filling_values={0:0.0, 1:0.0, 2:0.0, 3:0.0, 4:0.0, 5:0.0},
+#                converters={0:parseFloat, 1:parseFloat, 2:parseFloat, 3:parseFloat, 4:parseFloat, 5:parseFloat})
+#print(CONT)
 
 #for mat in tape.getMaterials():
 #    for file in mat.getFiles():
