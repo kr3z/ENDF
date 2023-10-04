@@ -123,6 +123,13 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-
+# Ignore properties file in favor of properties template files
 ENDF.properties
 db.properties
+
+# ignore .dat files used for testing
+*.dat
+
+# Ignore file used for profiling and resulting .prof files
+ENDF_Profile.py
+*.prof

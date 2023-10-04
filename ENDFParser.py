@@ -48,6 +48,20 @@ class ENDFPersistable:
     def setFileKey(self,key):
         self.file_key = key
 
+class Incrementor:
+    def __init__(self, initial_value: int):
+        self.value = initial_value
+
+    # add inc_by to current value and return the original value (i++)
+    def inc(self,inc_by: int = 1) -> int:
+        self.value += inc_by
+        return self.value - inc_by
+
+    # add inc_by to current value and return the new value (++i)
+    def inc_new(self,inc_by: int = 1) -> int:
+        self.value += inc_by
+        return self.value
+
 def parseFloat(floatStr):
     floatStr = "".join(floatStr.split()).replace('D', 'E')
     if floatStr.find('e')==-1 and floatStr.find('E')==-1:
@@ -110,69 +124,62 @@ class ENDFSection(ENDFPersistable):
             raise Exception("Bad MT values")
         
         self.parsed = True
-        idx = 0
+        idx = Incrementor(0)
         
         try:
             if self.file == 1: # General Information
                 # Descriptive Data and Directory
                 if self.MT == 451: 
-                    self.ZA, self.AWR, self.LRP, self.LFI, self.NLIB, self.NMOD = parseCONT(data.iat[idx,0])
-                    idx += 1
-                    self.ELIS, self.STA, self.LIS, self.LISO, _, self.NFOR = parseCONT(data.iat[idx,0])
-                    idx += 1
-                    self.AWI, self.EMAX, self.LREL, _, self.NSUB, self.NVER = parseCONT(data.iat[idx,0])
-                    idx += 1
-                    self.TEMP, _, self.LDRV, _, self.NWD, self.NXC = parseCONT(data.iat[idx,0])
-                    idx += 1
+                    self.ZA, self.AWR, self.LRP, self.LFI, self.NLIB, self.NMOD = parseCONT(data.iat[idx.inc(),0])
+                    self.ELIS, self.STA, self.LIS, self.LISO, _, self.NFOR = parseCONT(data.iat[idx.inc(),0])
+                    self.AWI, self.EMAX, self.LREL, _, self.NSUB, self.NVER = parseCONT(data.iat[idx.inc(),0])
+                    self.TEMP, _, self.LDRV, _, self.NWD, self.NXC = parseCONT(data.iat[idx.inc(),0])
 
                     self.desc = ""
                     self.section_data = []
-                    for i in range(0,self.NWD):
-                        self.desc = self.desc + '\n' + data.iat[idx+i,0]
-                    idx += self.NWD
-                    for i in range(0,self.NXC):
-                        _, _, MF, MT, NC, MOD = parseCONT(data.iat[idx+i,0])
+
+                    self.desc = '\n'.join(data.iloc[idx.inc(self.NWD):idx.value,0])
+                    #for i in range(0,self.NWD):
+                    #    self.desc = self.desc + '\n' + data.iat[idx+i,0]
+                    #idx += self.NWD
+
+
+                    for _ in range(0,self.NXC):
+                        _, _, MF, MT, NC, MOD = parseCONT(data.iat[idx.inc(),0])
                         self.section_data.append([MF,MT,NC,MOD])
-                    idx += self.NXC
+                    #idx += self.NXC
 
                 # 452: Number of Neutrons per Fission
                 # 456: Number of Prompt Neutrons per Fission
                 elif self.MT == 452 or self.MT == 456:
-                    self.ZA, self.AWR, _, self.LNU, _, _ = parseCONT(data.iat[0,0])
+                    self.ZA, self.AWR, _, self.LNU, _, _ = parseCONT(data.iat[idx.inc(),0])
                     if self.LNU == 1:
                         _, _, _, _, self.NC, _ = parseCONT(data.iat[1,0])
-                        self.C = parseList(data.iloc[2:2+math.ceil(self.NC/6), 0],self.NC)
+                        self.C = parseList(data.iloc[idx.inc(math.ceil(self.NC/6)):idx.value, 0],self.NC)
                     elif self.LNU == 2:
-                        _, _, _, _, self.NR, self.NP = parseCONT(data.iat[1,0])
+                        _, _, _, _, self.NR, self.NP = parseCONT(data.iat[idx.inc(),0])
                         interp_lines = math.ceil(self.NR/3)
-                        interp_data = data.iloc[2:2+interp_lines, 0]
+                        interp_data = data.iloc[idx.inc(interp_lines):idx.value, 0]
                         xy_lines = math.ceil(self.NP/3)
-                        xy_data = data.iloc[2+interp_lines:2+interp_lines+xy_lines, 0]
+                        xy_data = data.iloc[idx.inc(xy_lines):idx.value, 0]
                         self.NBT, self.INT, self.X, self.Y = parseTAB1(self.NR,self.NP, interp_data, xy_data)
                     else:
                         raise Exception("Invalid LNU option for MF=%s MT=%s, LNU: %s" % (self.file,self.MT,self.LNU))
                     
                 # Delayed Neutron Data
                 elif self.MT == 455:
-                    self.ZA, self.AWR, self.LDG, self.LNU, _, _ = parseCONT(data.iat[idx,0])
-                    idx += 1
+                    self.ZA, self.AWR, self.LDG, self.LNU, _, _ = parseCONT(data.iat[idx.inc(),0])
                     if self.LDG == 0:
-                        _, _, _, _, self.NNF, _ = parseCONT(data.iat[idx,0])
-                        idx += 1
-                        self.decay_constant = parseList(data.iloc[idx:idx+math.ceil(self.NNF/6), 0],self.NNF)
-                        idx += math.ceil(self.NNF/6)
-                        _, _, _, _, self.NR, self.NP = parseCONT(data.iat[idx,0])
-                        idx += 1
+                        _, _, _, _, self.NNF, _ = parseCONT(data.iat[idx.inc(),0])
+                        self.decay_constant = parseList(data.iloc[idx.inc(math.ceil(self.NNF/6)):idx.value, 0],self.NNF)
+                        _, _, _, _, self.NR, self.NP = parseCONT(data.iat[idx.inc(),0])
                         if self.LNU == 1:
-                            self.Vd = parseList(data.iloc[idx:idx+1, 0],1)
-                            idx += 1
+                            self.Vd = parseList(data.iloc[idx.inc():idx.value, 0],1)
                         elif self.LNU == 2:
                             interp_lines = math.ceil(self.NR/3)
-                            interp_data = data.iloc[idx:idx+interp_lines, 0]
-                            idx += interp_lines
+                            interp_data = data.iloc[idx.inc(interp_lines):idx.value, 0]
                             xy_lines = math.ceil(self.NP/3)
-                            xy_data = data.iloc[idx:idx+xy_lines, 0]
-                            idx += xy_lines
+                            xy_data = data.iloc[idx.inc(xy_lines):idx.value, 0]
                             self.NBT, self.INT, self.X, self.Y = parseTAB1(self.NR,self.NP,interp_data,xy_data)
                         else:
                             raise Exception("Invalid LNU value: LNU=%s" % (self.LNU))
@@ -184,53 +191,41 @@ class ENDFSection(ENDFPersistable):
 
                 #  Components of Energy Release Due to Fission
                 elif self.MT == 458:
-                    self.ZA, self.AWR, _, self.LFC, _, self.NFC = parseCONT(data.iat[idx,0])
-                    idx += 1
-                    _, _, _, self.NPLY, self.N1, self.N2 = parseCONT(data.iat[idx,0])
-                    idx += 1
-                    self.C = parseList(data.iloc[idx:idx+math.ceil(self.N1/6), 0],self.N1)
-                    idx += math.ceil(self.N1/6)
+                    self.ZA, self.AWR, _, self.LFC, _, self.NFC = parseCONT(data.iat[idx.inc(),0])
+                    _, _, _, self.NPLY, self.N1, self.N2 = parseCONT(data.iat[idx.inc(),0])
+                    self.C = parseList(data.iloc[idx.inc(math.ceil(self.N1/6)):idx.value, 0],self.N1)
 
                     if self.LFC == 1:
                         self.EIFC = []
                         for _ in range (0,self.NFC):
-                            _, _, LDRV, IFC, NR, NP = parseCONT(data.iat[idx,0])
-                            idx += 1
+                            _, _, LDRV, IFC, NR, NP = parseCONT(data.iat[idx.inc(),0])
 
                             interp_lines = math.ceil(NR/3)
-                            interp_data = data.iloc[idx:idx+interp_lines, 0]
-                            idx += interp_lines
+                            interp_data = data.iloc[idx.inc(interp_lines):idx.value, 0]
                             xy_lines = math.ceil(NP/3)
-                            xy_data = data.iloc[idx:idx+xy_lines, 0]
-                            idx += xy_lines
+                            xy_data = data.iloc[idx.inc(xy_lines):idx.value, 0]
 
                             NBT, INT, X, Y = parseTAB1(NR,NP,interp_data,xy_data)
                             self.EIFC.append([LDRV, IFC, NR, NP, NBT, INT, X, Y])
 
                 #  Delayed Photon Data
                 elif self.MT == 460:
-                    self.ZA, self.AWR, self.LO, _,  self.NG, _ = parseCONT(data.iat[idx,0])
-                    idx += 1
+                    self.ZA, self.AWR, self.LO, _,  self.NG, _ = parseCONT(data.iat[idx.inc(),0])
                     if self.LO == 1:
                         self.T = []
                         for _ in range (0,self.NG):
-                            E, _, iNG, _, NR, NP = parseCONT(data.iat[idx,0])
-                            idx += 1
+                            E, _, iNG, _, NR, NP = parseCONT(data.iat[idx.inc(),0])
 
                             interp_lines = math.ceil(NR/3)
-                            interp_data = data.iloc[idx:idx+interp_lines, 0]
-                            idx += interp_lines
+                            interp_data = data.iloc[idx.inc(interp_lines):idx.value, 0]
                             xy_lines = math.ceil(NP/3)
-                            xy_data = data.iloc[idx:idx+xy_lines, 0]
-                            idx += xy_lines
+                            xy_data = data.iloc[idx.inc(xy_lines):idx.value, 0]
 
                             NBT, INT, X, Y = parseTAB1(NR,NP,interp_data,xy_data)
                             self.T.append([E, iNG, NR, NP, NBT, INT, X, Y])
                     elif self.LO == 2:
-                        _, _, _, _, _, self.NNF = parseCONT(data.iat[idx,0])
-                        idx += 1
-                        self.C = parseList(data.iloc[idx:idx+math.ceil(self.NNF/6), 0],self.NNF)
-                        idx += math.ceil(self.NNF/6)
+                        _, _, _, _, _, self.NNF = parseCONT(data.iat[idx.inc(),0])
+                        self.C = parseList(data.iloc[idx.inc(math.ceil(self.NNF/6)):idx.value, 0],self.NNF)
 
                     else:
                         raise Exception("Invalid LO value: LO=%s" % (self.LO))
@@ -239,17 +234,13 @@ class ENDFSection(ENDFPersistable):
             
             # Reaction Cross Sections
             elif self.file == 3:
-                self.ZA, self.AWR, _, _, _, _ = parseCONT(data.iat[idx,0])
-                idx += 1
-                self.QM, self.QI, _, self.LR, self.NR, self.NP = parseCONT(data.iat[idx,0])
-                idx += 1
+                self.ZA, self.AWR, _, _, _, _ = parseCONT(data.iat[idx.inc(),0])
+                self.QM, self.QI, _, self.LR, self.NR, self.NP = parseCONT(data.iat[idx.inc(),0])
 
                 interp_lines = math.ceil(self.NR/3)
-                interp_data = data.iloc[idx:idx+interp_lines, 0]
-                idx += interp_lines
+                interp_data = data.iloc[idx.inc(interp_lines):idx.value, 0]
                 xy_lines = math.ceil(self.NP/3)
-                xy_data = data.iloc[idx:idx+xy_lines, 0]
-                idx += xy_lines
+                xy_data = data.iloc[idx.inc(xy_lines):idx.value, 0]
                 self.NBT, self.INT, self.X, self.Y = parseTAB1(self.NR,self.NP,interp_data,xy_data)
 
             else:
@@ -576,18 +567,6 @@ class ENDFTape:
     def isZip(self):
         return self.zip
 
-
-#config = configparser.ConfigParser()
-#config.read('db.properties')
-
-#db_host=config.get("db", "db_host")
-#db_name=config.get("db", "db_name")
-#db_user=config.get("db", "user")
-#db_password=config.get("db", "password")
-
-#conn = None
-#cursor = None
-
 #tape = ENDFTape("n_9437_94-Pu-239.dat")
 #tape = ENDFTape("n_9034_90-TH-230.dat")
 #tape = ENDFTape("mendl2_all.dat")
@@ -598,37 +577,3 @@ class ENDFTape:
 #tape = ENDFTape("IRDF82.SL")
 #tape = ENDFTape("n_5613_56-Ba-133M.dat")
 #tape.parseTape()
-
-#line='           0                 0.0 1.0000000-5-1.234567+1 + 1.2 +2  '
-#CONT = np.genfromtxt(StringIO(line), dtype="f8,f8,f8,f8,f8,f8", names=['C1', 'C2', 'L1', 'L2', 'N1', 'N2'],
-#                delimiter=[11,11,11,11,11,11], autostrip=True, filling_values={0:0.0, 1:0.0, 2:0.0, 3:0.0, 4:0.0, 5:0.0},
-#                converters={0:parseFloat, 1:parseFloat, 2:parseFloat, 3:parseFloat, 4:parseFloat, 5:parseFloat})
-#print(CONT)
-
-#for mat in tape.getMaterials():
-#    for file in mat.getFiles():
-#        for section in file.getSections():
-#            print("mat: %s fmat: %s file: %s smat: %s sfile: %s MT: %s" % (mat.getMaterial(), file.getMaterial(), file.getFile(), section.getMaterial(), section.getFile(), section.getMT()))
-
-#try:
-#    conn = mysql.connector.connect(host=db_host,
-#                                   database=db_name,
-#                                   user=db_user,
-#                                   password=db_password)
-
-#    conn.autocommit = False
-#    cursor = conn.cursor()                  
-#    for mat in tape.getMaterials():
-#        mat.persist(cursor)
-#        conn.commit()
-#except Exception as error:
-#  print(type(error))
-#  print(error)
-#  traceback.print_exc()
-#  if conn is not None:
-#    conn.rollback()
-#finally:
-#  if conn is not None and conn.is_connected():
-#    if cursor is not None:
-#      cursor.close()
-#    conn.close()
